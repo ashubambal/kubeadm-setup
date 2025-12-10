@@ -37,7 +37,10 @@ helm repo update
 
 ### Install the driver
 ```bash
-helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver   --namespace kube-system   --set controller.serviceAccount.create=true   --set controller.serviceAccount.annotations."eks.amazonaws.com/role-arn"="arn:aws:iam::<ACCOUNT-ID>:role/AmazonEKS_EBS_CSI_DriverRole"
+helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+  -n kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.annotations."eks\\.amazonaws\\.com/role-arn"="arn:aws:iam::041326371952:role/AmazonEKS_EBS_CSI_DriverRole"
 ```
 
 Verify pods:
