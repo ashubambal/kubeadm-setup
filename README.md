@@ -1,97 +1,177 @@
-# Kubernetes Cluster Setup using Kubeadm (Master + Worker on EC2)
+# Kubernetes Cluster Setup using kubeadm (Ubuntu)
 
-## Overview
-This repository provides production-ready automation scripts to set up a Kubernetes cluster using **kubeadm** on AWS EC2 instances.  
-It includes scripts for:
-- Common setup for both nodes  
-- Master node initialization  
-- Worker node join process  
+A complete guide to set up a production-grade Kubernetes cluster using kubeadm on Ubuntu 20.04 / 22.04 / 24.04.  
+This document includes all required prerequisites, configuration steps for both master and worker nodes, and common troubleshooting commands.
 
-## Folder Structure
-```
-kubeadm-setup/
-├── setup-common.sh
-├── setup-master.sh
-├── setup-worker.sh
-└── README.md
-```
+## 1. Prerequisites
 
-# 1. Prerequisites
+### System Requirements
+| Component | Master | Worker |
+|----------|--------|--------|
+| CPU | 2 vCPU+ | 1 vCPU+ |
+| RAM | 2–4 GB | 2 GB |
+| Storage | 20 GB+ | 20 GB+ |
+| Network | Nodes must ping each other | Required |
 
-## EC2 Requirements
-| Node | Type | OS | CPU | RAM | Storage |
-|------|------|----|-----|-----|----------|
-| Master | t3.medium | Ubuntu 22.04 | 2 vCPU | 4 GB | 30 GB |
-| Worker | t3.medium | Ubuntu 22.04 | 2 vCPU | 4 GB | 30 GB |
+### Mandatory Setup on All Nodes
 
-## Security Group Rules
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| 22 | TCP | SSH |
-| 6443 | TCP | Kubernetes API |
-| 10250 | TCP | Kubelet |
-| 30000–32767 | TCP | NodePort |
-| 179 | TCP | Calico |
-
-# 2. Scripts
-
-## setup-common.sh
-- Disables swap  
-- Loads kernel modules  
-- Configures sysctl  
-- Installs containerd  
-- Installs kubeadm, kubelet, kubectl  
-
-## setup-master.sh
-- Initializes control-plane  
-- Sets kubectl config  
-- Installs Calico CNI  
-- Outputs join command  
-
-## setup-worker.sh
-- Accepts join command  
-- Joins node to master  
-
-# 3. Usage
-
-## Step 1: Upload & make executable
-```
-chmod +x setup-common.sh setup-master.sh setup-worker.sh
+#### Update System
+```bash
+sudo apt update && sudo apt upgrade -y
 ```
 
-## Step 2: Run common script
-Master:
-```
-./setup-common.sh
-```
-Worker:
-```
-./setup-common.sh
+#### Disable Swap
+```bash
+sudo swapoff -a
+sudo sed -i '/swap/d' /etc/fstab
 ```
 
-## Step 3: Initialize master
-```
-./setup-master.sh
+#### Load Required Kernel Modules
+```bash
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+sudo modprobe overlay
+sudo modprobe br_netfilter
 ```
 
-## Step 4: Join worker
-```
-./setup-worker.sh "<join command>"
+#### Configure Network Parameters
+```bash
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+
+sudo sysctl --system
 ```
 
-## Step 5: Verify
+### Install containerd Runtime
+```bash
+sudo apt install -y containerd
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo systemctl enable containerd
 ```
+
+### Install kubeadm, kubelet, kubectl
+```bash
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key   | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /"   | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+```
+
+## 2. Common Commands on All Nodes
+
+### Service Status
+```bash
+systemctl status kubelet
+systemctl status containerd
+```
+
+### Restart Services
+```bash
+sudo systemctl restart kubelet
+sudo systemctl restart containerd
+```
+
+### Log Monitoring
+```bash
+journalctl -u kubelet -f
+journalctl -u containerd -f
+```
+
+## 3. Master Node Setup
+
+### Initialize Kubernetes Control Plane
+```bash
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+```
+
+### Configure kubectl
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+### Install Calico CNI Network Plugin
+```bash
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.2/manifests/calico.yaml
+```
+
+### Verify Master Node
+```bash
 kubectl get nodes
 kubectl get pods -A
 ```
 
-# 4. Production Hardening
-- Enable audit logs  
-- Encrypt secrets at rest  
-- Use etcd backup strategy  
-- Restrict SSH  
-- Enable Calico network policies  
-- Configure metrics server  
+## 4. Worker Node Setup
 
-# 5. Support
-For further automation (Terraform, Ansible, CI/CD), enhancements can be added anytime.
+### Join Worker Node to the Cluster
+```bash
+sudo kubeadm join <MASTER-IP>:6443 --token <TOKEN>   --discovery-token-ca-cert-hash sha256:<HASH>
+```
+
+### Get Join Command If Lost
+```bash
+sudo kubeadm token create --print-join-command
+```
+
+### Verify in Master
+```bash
+kubectl get nodes -o wide
+```
+
+## 5. Troubleshooting & Fixes
+
+### Kubelet Crash Loop: Missing config.yaml
+Error:
+```
+failed to read kubelet config file "/var/lib/kubelet/config.yaml"
+```
+
+Fix: Run kubeadm init (master) or kubeadm join (worker).
+
+### Reset Failed Cluster
+```bash
+sudo kubeadm reset -f
+sudo rm -rf /etc/cni/net.d
+sudo systemctl restart kubelet
+```
+
+### Delete CNI Interfaces
+```bash
+sudo ip link delete cni0
+sudo ip link delete flannel.1 2>/dev/null
+```
+
+## 6. Test Deployment
+
+### Deploy Nginx
+```bash
+kubectl create deployment nginx --image=nginx
+```
+
+### Expose Nginx as NodePort
+```bash
+kubectl expose deployment nginx --port=80 --type=NodePort
+```
+
+### Check Service
+```bash
+kubectl get svc
+```
+
+## Notes
+- kubelet restarts until kubeadm init/join generates its config.
